@@ -1,59 +1,48 @@
 from fastapi import FastAPI
-import torch
-from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig
+#from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig
 from pydantic import BaseModel
 app = FastAPI()
 
+from utils import detect_hardware_and_load #adjustments to ram and threads number. 
 
-#------------------PREVIOUS MODEL DEFINITION---------------------------
-#Defined outside the prompt-processor func to load the model only once (when server initialized)
-#model_pipeline = pipeline(
-#    "text-generation", 
-#    model="meta-llama/Llama-3.2-1B", 
-#    device=-1 
-#)
-#------------------------------END-------------------------------------
 
-#ACTUAL MODEL DEFINITION (4 BITS) to decrease computational costs (RAM)
+llm = detect_hardware_and_load()
 
-class Query(BaseModel): #to receive a JSON
-    prompt:str
 
-model_id = "Qwen/Qwen2.5-1.5B-Instruct"
+class Query(BaseModel):
+    prompt: str
+    lang : str = "es"
 
-#bnb_config = BitsAndBytesConfig( #not usable unless having an NVIDIA
-#    load_in_4bit = True, 
-#    bnb_4bit_quant_type="nf4", #normal float 16 it's a type of data optimized for NNs
-#    bnb_4bit_compute_dtype=torch.float16 #use 16 bits for operations
-#)
-#
-model = AutoModelForCausalLM.from_pretrained( #Initialize model
-    model_id,
-    low_cpu_mem_usage=True,
-    device_map="auto"
-)
-
-tokenizer = AutoTokenizer.from_pretrained(model_id)
-
+IDIOMA = {
+    "es" : "Responde siempre en español",
+    "en" : "Answer always in english"
+}
 @app.post("/ask") #Post to send the user's prompt
-#Function to use when accessed to "http://127.0.0.1:8000/ask"
+#Function to use when accessed to "http://127.0.0.1:8000/docs"
 async def ask_fast(query: Query): #async function. ensures the prompt is an str
 
-    full_prompt = f"<|im_start|>system\nAnswer in less than 30 words.<|im_end|>\n<|im_start|>user\n{query.prompt}<|im_end|>\n<|im_start|>assistant\n" #optimized query 4 qwen
-    inputs = tokenizer(full_prompt,return_tensors="pt").to(model.device)
-    input_length = inputs.input_ids.shape[1] #number of exact words of the prompt
+    instruccion_idioma = IDIOMA.get(query.lang, IDIOMA["es"])
 
-    result = model.generate(
-        **inputs, 
-        max_new_tokens=50,  #Limit the answer (nº tokens)
-        num_return_sequences=1,
-        #truncation=True #Cuts the answer when the limit is reached to avoid errors.  
-        pad_token_id = tokenizer.eos_token_id,
-        temperature=0.7,
-        do_sample=True
-
+    prompt = (
+        "<|im_start|>system\n"
+        "Answer in less than 50 words. ONLY ANSWER WITH KEY WORDS! Before answer, revise that the information provided is correct."
+         f"{instruccion_idioma} <|im_end|>\n"
+        f"<|im_start|>user\n{query.prompt}<|im_end|>\n"
+        "<|im_start|>assistant\n"
     )
 
-    answer = tokenizer.decode(result[0][input_length:], skip_special_tokens=True)
+    result = llm(
+        prompt, 
+        max_tokens=80,  #Limit the answer (nº tokens)
+        stop=["<|im_end|>", "<|im_start|>", "\nuser"],
+        temperature=0.3,
+        top_p=0.95, #Cleans the top 5% worst words to use (based on probabilities)
+        top_k = 40, #40 1st words used, the rest of them discarted. 
+        echo=False
+    )
+
+
+    answer = result["choices"][0]["text"]        
+
     
     return {"Answer": answer.strip()}

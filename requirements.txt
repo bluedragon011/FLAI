@@ -1,0 +1,10 @@
+fastapi==0.115.0
+uvicorn==0.31.0
+pydantic==2.9.2
+llama-cpp-python --extra-index-url https://abetlen.github.io/llama-cpp-python/whl/cpu
+huggingface-hub
+psutil
+langchain
+langchain-community
+sentence-transformers  #text to number(Embeddings)
+chromadb               #local database
