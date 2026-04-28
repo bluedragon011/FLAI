@@ -5,3 +5,5 @@ __pycache__/
 .cache/
 *.log
 *.whl
+chroma_db/
+temp_*

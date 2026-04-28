@@ -8,3 +8,7 @@ langchain
 langchain-community
 sentence-transformers  #text to number(Embeddings)
 chromadb               #local database
+langchain-huggingface
+langchain-chroma
+pypdf
+python-multipart
