@@ -1,5 +1,7 @@
 from fastapi import FastAPI, UploadFile, File
+from fastapi.responses import StreamingResponse
 import shutil
+import json
 #from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig
 
 from pydantic import BaseModel
@@ -24,6 +26,7 @@ CHROMA_PATH = "./chroma_db"
 class Query(BaseModel):
     prompt: str
     lang : str = "es"
+    collection_name: str
 
 
 #Available languages
@@ -32,9 +35,24 @@ IDIOMA = {
     "en" : "Answer always in english"
 }
 
+#function to stream the answer. 
+async def dynamic_words(prompt : str):
+    for chunk in llm.create_completion(
+        prompt,
+        max_tokens = 100, 
+        stop=["<|im_end|>", "<|im_start|>", "\nuser"], 
+        stream=True, #this allows us to send the tokens before all the answer is finished
+        temperature = 0.3,
+        top_p=0.95, #Cleans the top 5% worst words to use (based on probabilities)
+        top_k = 40, #40 1st words used, the rest of them discarted. 
+        echo=False
+    ):
+        token = chunk["choices"][0]["text"] #extract the text from the actual fragment
+        yield token #We use this to pause the function until we send the token
+
 #----------------------------------NEW ENDPOINT TO PROCESS USER'S TEXTS/PDFs--------------------------------
-@app.post('/upload')
-async def upload_file(file : UploadFile = File(...)):
+@app.post('/upload/{collection_name}')
+async def upload_file(collection_name: str, file : UploadFile = File(...)):
     #1st step: save content (temporally)
     with open(file.filename, "wb") as f: 
         shutil.copyfileobj(file.file, f)
@@ -50,7 +68,8 @@ async def upload_file(file : UploadFile = File(...)):
     vector_db = Chroma.from_documents(
     documents=chunks, 
     embedding=embeddings_model,
-    persist_directory=CHROMA_PATH
+    persist_directory=CHROMA_PATH,
+    collection_name=collection_name
 )
     os.remove(file.filename)
     return {"status":  "File indexed permanently"}
@@ -61,7 +80,7 @@ async def upload_file(file : UploadFile = File(...)):
 async def ask_fast(query: Query): #async function. ensures the prompt is an str
 
     #New function: add the context saved in the chromaDB: 
-    db = Chroma(persist_directory=CHROMA_PATH, embedding_function=embeddings_model)
+    db = Chroma(persist_directory=CHROMA_PATH, embedding_function=embeddings_model, collection_name = query.collection_name)
     docs = db.similarity_search(query.prompt, k=3) # 3 best fragments
     context = "\n".join([d.page_content for d in docs])
 
@@ -69,25 +88,15 @@ async def ask_fast(query: Query): #async function. ensures the prompt is an str
 
     prompt = (
         "<|im_start|>system\n"
-        "Answer in less than 50 words. ONLY ANSWER WITH KEY WORDS! Before answer, revise that the information provided is correct."
-         f"{instruccion_idioma} <|im_end|>\n"
-         f"context: {context}"
+        "Answer in less than 50 words. ONLY ANSWER WITH KEY WORDS! Before answer, revise that the information provided is correct.\n"
+         f"{instruccion_idioma}\n"
+         f"Context: {context} <|im_end|>\n"
         f"<|im_start|>user\n{query.prompt}<|im_end|>\n"
         "<|im_start|>assistant\n"
     )
-
-    result = llm(
-        prompt, 
-        max_tokens=80,  #Limit the answer (nº tokens)
-        stop=["<|im_end|>", "<|im_start|>", "\nuser"],
-        temperature=0.3,
-        top_p=0.95, #Cleans the top 5% worst words to use (based on probabilities)
-        top_k = 40, #40 1st words used, the rest of them discarted. 
-        echo=False
-    )
-
-
-    answer = result["choices"][0]["text"]        
-
     
-    return {"Answer": answer.strip()}
+    
+    return StreamingResponse( #this returns each word instead of all the answer directly. 
+        dynamic_words(prompt), #we don't need the answer anymore
+        media_type="text/event-stream"
+    )
